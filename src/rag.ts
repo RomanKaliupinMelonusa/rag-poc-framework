@@ -13,6 +13,10 @@ import {
     Settings,
     MetadataMode,
     OpenAIEmbedding,
+    BaseQueryEngine,
+    ChatMessage,
+    StorageContext,
+    OpenAI
 } from "llamaindex";
 
 
@@ -27,6 +31,15 @@ Settings.embedModel = Settings.embedModel = new OpenAIEmbedding({
     model: "text-embedding-3-small", // Your chosen embedding model
     apiKey: process.env.OPENAI_API_KEY
 }); // Configure embedding model if needed
+
+
+if (process.env.PERFORM_RAG === 'true' ) {
+    Settings.llm = new OpenAI({
+        model: process.env.LLM_MODEL,
+        apiKey: process.env.OPENAI_API_KEY
+    });
+    console.log(`LLM configured for RAG: ${Settings.llm.metadata.model}`);
+}
 
 // --- Configuration ---
 const DEFAULT_INDEX_DIR = "./storage";
@@ -218,6 +231,46 @@ async function performSearch(index: VectorStoreIndex, queryText: string, topN: n
     }
 }
 
+/**
+ * Loads an index from a persistence directory and performs a query.
+ *
+ * @param queryText The user's query string.
+ * @param persistDir The directory path where the index is saved.
+ * @returns Promise<{ response: string; sourceNodes: NodeWithScore[] | undefined }> The query response and source nodes.
+ * @throws Error if the persistence directory does not exist.
+ */
+async function queryIndex(
+    index: VectorStoreIndex,
+    queryText: string
+  ): Promise<{ message: ChatMessage; sourceNodes: NodeWithScore[] | undefined }> {
+    console.log(`\n--- Starting Query Process ---`);
+    console.log(`Query: "${queryText}"`);
+
+    try {
+      // Create a query engine from the loaded index
+      const queryEngine: BaseQueryEngine = index.asQueryEngine();
+
+      // Perform the query
+      console.log("Performing query...");
+      const { message, sourceNodes } = await queryEngine.query({
+        query: queryText,
+      });
+      console.log("Query completed.");
+      console.log(`--- Query Process Finished ---`);
+
+
+      // Return the relevant parts of the result
+      return {
+          message,
+          sourceNodes
+      };
+
+    } catch (error) {
+      console.error("Error during query:", error);
+      throw error; // Re-throw error after logging
+    }
+  }
+
 // --- Example Usage --- (main function remains the same)
 async function main() {
     const indexDirectory = path.resolve(process.env.INDEX_DIR || DEFAULT_INDEX_DIR);
@@ -234,21 +287,28 @@ async function main() {
 
     try {
         const index = await getOrCreateIndex(indexDirectory, documentsDirectory);
-        const searchResults = await performSearch(index, searchQuery, numberOfResults);
 
-        console.log("\n--- Search Results ---");
-        if (searchResults.length > 0) {
-            searchResults.forEach((result, i) => {
-                console.log(`\n[${i + 1}] Score: ${result.score.toFixed(4)}`);
-                // console.log(`Metadata: ${JSON.stringify(result.metadata)}`);
-                console.log("Text:");
-                console.log(result.text.substring(0, 500) + (result.text.length > 500 ? "..." : ""));
-                console.log("---");
-            });
+        if (process.env.PERFORM_RAG === 'true') {
+            const { message, sourceNodes } = await queryIndex(index, searchQuery);
+
+            console.log("\nQuery Response:");
+            console.log("Output response with sources: \n", message.content, '\n\n');
         } else {
-            console.log("No relevant results found for your query.");
-        }
+            const searchResults = await performSearch(index, searchQuery, numberOfResults);
 
+            console.log("\n--- Search Results ---");
+            if (searchResults.length > 0) {
+                searchResults.forEach((result, i) => {
+                    console.log(`\n[${i + 1}] Score: ${result.score.toFixed(4)}`);
+                    // console.log(`Metadata: ${JSON.stringify(result.metadata)}`);
+                    console.log("Text:");
+                    console.log(result.text.substring(0, 500) + (result.text.length > 500 ? "..." : ""));
+                    console.log("---");
+                });
+            } else {
+                console.log("No relevant results found for your query.");
+            }
+        }
     } catch (error) {
         console.error("\n--- An error occurred during execution ---");
         console.error(error);
